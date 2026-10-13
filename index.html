@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ShrimpTrack YOLO</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<style>
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font-family:system-ui,"Noto Sans Thai",sans-serif;background:linear-gradient(135deg,#f97316,#facc15 55%,#60a5fa);padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+.app{height:100dvh;display:grid;grid-template-columns:1fr 270px;gap:10px;padding:10px;background:#0f1b33;color:#e2e8f0}
+.media{background:#000;border-radius:16px;overflow:hidden;display:grid;place-items:center;min-height:0;min-width:0}
+video,canvas{max-width:100%;max-height:100%;display:block}
+#cv{display:none}
+.side{display:flex;flex-direction:column;gap:7px;min-height:0;overflow:auto}
+h1{margin:0;background:#2563eb;color:#fff;text-align:center;padding:8px;border-radius:12px;font-size:19px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.card{background:#fff;border-radius:12px;padding:7px;text-align:center;color:#0f1b33}
+.card small{display:block;color:#2563eb;font-weight:700;font-size:11px}.card b{font-size:28px}.card i{font-size:12px;color:#f97316;font-style:normal}.card span{display:block;color:#94a3b8;font-size:10px}
+.bar{display:flex;gap:3px}.bar div{flex:1;height:7px;border-radius:4px;background:#334155}.bar .on{background:#22c55e}.bar .cur{background:#f97316}
+.btn{border:0;border-radius:12px;padding:11px;font-size:16px;font-weight:700;color:#fff;background:#059669;cursor:pointer}.btn:disabled{opacity:.5}
+.btn.alt{background:#2563eb;font-size:14px;padding:8px}
+#msg{font-size:12px;color:#fbbf24;min-height:15px;text-align:center}
+.set{font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:6px;justify-content:center}
+.set input{width:56px;padding:4px;border-radius:6px;border:0}
+.sn{font-size:15px;font-weight:700;min-height:20px;color:#0f1b33}#stage{font-size:42px}
+.names{background:#1e293b;border-radius:12px;padding:8px;font-size:13px}.names summary{cursor:pointer;font-weight:700}.names input{width:100%;padding:6px;border-radius:6px;border:0;font-size:14px}
+.rot{display:none;position:fixed;inset:0;background:#0f1b33;color:#fff;place-items:center;font-size:20px;text-align:center;z-index:9}
+@media(orientation:portrait){.rot{display:grid}}
+</style>
+</head>
+<body>
+<div class="rot">🔄<br>กรุณาหมุนจอเป็นแนวนอน</div>
+<main class="app">
+  <div class="media"><video id="v" autoplay playsinline muted></video><canvas id="cv"></canvas></div>
+  <div class="side">
+    <h1>ShrimpTrack</h1>
+    <div class="card"><small>STAGE / ระยะ</small><b id="stage">–</b><div class="sn" id="sname"></div><span id="acc">Acc: –</span></div>
+    <div class="bar" id="bar"></div>
+    <div id="msg"></div>
+    <button class="btn" id="scan" disabled>🔍 สแกน</button>
+    <button class="btn alt" id="pick">🖼️ เลือกรูปจากเครื่อง</button>
+    <input type="file" id="file" accept="image/*" hidden>
+    <details class="names"><summary>✏️ ตั้งชื่อแต่ละระยะ</summary><div id="nl"></div></details>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+<script>
+if("serviceWorker" in navigator)addEventListener("load",()=>navigator.serviceWorker.register("sw.js"));
+const $=id=>document.getElementById(id),V=$("v"),C=$("cv");
+const SZ=640,CONF=.35,IOU=.45;
+let sess,frozen=false,NM;try{NM=JSON.parse(localStorage.getItem("names")||"[]")}catch(e){NM=[]}
+ort.env.wasm.wasmPaths="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
+ort.env.wasm.numThreads=1;
+const msg=t=>$("msg").textContent=t, wait=()=>new Promise(r=>setTimeout(r,40));
+const nm=i=>(NM[i]||"").trim(),esc=s=>s.replace(/[&"<>]/g,c=>({"&":"&amp;",'"':"&quot;","<":"&lt;",">":"&gt;"}[c]));
+$("nl").innerHTML=[0,1,2,3,4,5,6].map(i=>`<div style="display:grid;grid-template-columns:22px 1fr;align-items:center;gap:4px;margin-top:5px"><b>${i+1}</b><input data-i="${i}" placeholder="ระยะ ${i+1}" value="${esc(NM[i]||"")}"></div>`).join("");
+$("nl").oninput=e=>{NM[+e.target.dataset.i]=e.target.value;localStorage.setItem("names",JSON.stringify(NM))};
+const bar=n=>$("bar").innerHTML=[1,2,3,4,5,6,7].map(i=>`<div class="${i<n?"on":i==n?"cur":""}"></div>`).join("");bar(0);
+
+// ---------- โหลดโมเดล YOLO (ONNX) และกล้อง ----------
+(async()=>{
+  try{await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false}).then(s=>V.srcObject=s)}
+  catch(e){msg("เปิดกล้องไม่ได้ ใช้ปุ่มเลือกรูปแทน")}
+  try{msg("กำลังโหลดโมเดล...");sess=await ort.InferenceSession.create("best.onnx",{executionProviders:["wasm"]});msg("");$("scan").disabled=false}
+  catch(e){msg("โหลด best.onnx ไม่ได้ ต้องวางไฟล์โมเดลไว้ข้าง index.html")}
+})();
+
+// ---------- ตรวจจับด้วย YOLOv8: letterbox -> inference -> NMS ----------
+async function detect(s){
+  const w=s.width,h=s.height,r=Math.min(SZ/w,SZ/h),nw=Math.round(w*r),nh=Math.round(h*r),px=(SZ-nw)/2,py=(SZ-nh)/2;
+  const t=document.createElement("canvas");t.width=t.height=SZ;const g=t.getContext("2d");
+  g.fillStyle="#727272";g.fillRect(0,0,SZ,SZ);g.drawImage(s,px,py,nw,nh);
+  const d=g.getImageData(0,0,SZ,SZ).data,A=SZ*SZ,f=new Float32Array(3*A);
+  for(let i=0;i<A;i++){f[i]=d[i*4]/255;f[A+i]=d[i*4+1]/255;f[2*A+i]=d[i*4+2]/255}
+  const out=await sess.run({[sess.inputNames[0]]:new ort.Tensor("float32",f,[1,3,SZ,SZ])});
+  const o=out[sess.outputNames[0]],N=o.dims[2],nc=o.dims[1]-4,p=o.data,B=[];
+  for(let i=0;i<N;i++){
+    let m=0,c=0;for(let k=0;k<nc;k++){const v=p[(4+k)*N+i];if(v>m){m=v;c=k}}
+    if(m<CONF)continue;
+    const bw=p[2*N+i],bh=p[3*N+i];
+    B.push({c,s:m,x:(p[i]-bw/2-px)/r,y:(p[N+i]-bh/2-py)/r,w:bw/r,h:bh/r});
+  }
+  return nms(B);
+}
+function iou(a,b){const x=Math.max(a.x,b.x),y=Math.max(a.y,b.y),X=Math.min(a.x+a.w,b.x+b.w),Y=Math.min(a.y+a.h,b.y+b.h),i=Math.max(0,X-x)*Math.max(0,Y-y);return i/(a.w*a.h+b.w*b.h-i)}
+function nms(B){B.sort((a,b)=>b.s-a.s);const k=[];for(const b of B)if(k.every(a=>iou(a,b)<IOU))k.push(b);return k}
+
+// ---------- แสดงผล ----------
+function show(s,B){
+  C.width=s.width;C.height=s.height;const g=C.getContext("2d");g.drawImage(s,0,0);
+  const fs=Math.max(14,s.width/38);g.lineWidth=Math.max(2,s.width/250);g.font=`bold ${fs}px sans-serif`;
+  B.forEach(b=>{const col=`hsl(${b.c*50},90%,55%)`,t=`${b.c+1}${nm(b.c)?" "+nm(b.c):""} ${Math.round(b.s*100)}%`;
+    g.strokeStyle=col;g.strokeRect(b.x,b.y,b.w,b.h);const ty=Math.max(fs+6,b.y);
+    g.fillStyle=col;g.fillRect(b.x,ty-fs-6,g.measureText(t).width+8,fs+6);g.fillStyle="#000";g.fillText(t,b.x+4,ty-6)});
+  V.style.display="none";C.style.display="block";frozen=true;$("scan").textContent="↺ ถ่ายใหม่";
+  if(!B.length){$("stage").textContent="–";$("sname").textContent="";$("acc").textContent="Acc: –";bar(0);msg("ไม่พบไข่ในภาพ ลองถ่ายให้ใกล้และชัดขึ้น");return}
+  const b=B[0];
+  $("stage").textContent=b.c+1;$("sname").textContent=nm(b.c);$("acc").textContent=`Acc: ${Math.round(b.s*100)}%`;
+  bar(b.c+1);msg(B.length>1?`พบ ${B.length} จุด (แสดงจุดที่มั่นใจสุด)`:"");
+}
+function snap(src,w,h){const k=Math.min(1,1280/Math.max(w,h)),c=document.createElement("canvas");c.width=Math.round(w*k);c.height=Math.round(h*k);c.getContext("2d").drawImage(src,0,0,c.width,c.height);return c}
+async function run(s){msg("กำลังวิเคราะห์...");$("scan").disabled=true;await wait();
+  try{show(s,await detect(s))}catch(e){msg("ผิดพลาด: "+e.message)}
+  $("scan").disabled=false}
+
+$("scan").onclick=()=>{
+  if(frozen){C.style.display="none";V.style.display="block";frozen=false;$("scan").textContent="🔍 สแกน";return}
+  if(!V.videoWidth){msg("กล้องยังไม่พร้อม ใช้ปุ่มเลือกรูปแทน");return}
+  run(snap(V,V.videoWidth,V.videoHeight));
+};
+$("pick").onclick=()=>$("file").click();
+$("file").onchange=async e=>{
+  const f=e.target.files[0];e.target.value="";if(!f)return;
+  if(!sess){msg("ยังไม่มีโมเดล");return}
+  const im=new Image();im.src=URL.createObjectURL(f);await im.decode();
+  run(snap(im,im.naturalWidth,im.naturalHeight));
+};
+</script>
+</body>
+</html>

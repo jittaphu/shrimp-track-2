@@ -1,0 +1,15 @@
+{
+  "name": "ShrimpTrack YOLO",
+  "short_name": "ShrimpTrack",
+  "description": "ตรวจระยะไข่กุ้ง 7 ระยะด้วย YOLO ในเครื่อง ไม่ต้องใช้เซิร์ฟเวอร์",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#0f1b33",
+  "theme_color": "#2563eb",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}
